@@ -157,6 +157,29 @@ export function createApp() {
                 const bodies = meta?.notifPrivacy
                     ? extractPushBodies(item.content).map(() => '你有一条新消息')
                     : extractPushBodies(item.content);
+
+                // --- 企业微信 Webhook 推送开始 ---
+                try {
+                    const wechatUrl = c.env?.WECHAT_WEBHOOK_URL || 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=12415e03-8ac0-461a-9409-e2d8a02d8c78';
+                    if (wechatUrl) {
+                        const wechatMsg = bodies.join('\n\n');
+                        const wechatPayload = {
+                            msgtype: 'text',
+                            text: {
+                                content: `【${title}】\n${wechatMsg}`
+                            }
+                        };
+                        await fetch(wechatUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(wechatPayload)
+                        });
+                    }
+                } catch (wechatErr) {
+                    console.warn('[generate] Wechat push failed:', wechatErr?.message);
+                }
+                // --- 企业微信 Webhook 推送结束 ---
+
                 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                 let i = 0;
                 for (const body of bodies) {
@@ -464,8 +487,8 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 走线下剧情：暂停/恢复该 inbox 的所有主动生成。
-    // 手机端走线下时心跳式 pause（带 durationMs 自动过期，防没发 resume 永久哑火），退出时 resume。
+    // 走线上下文：暂停/恢复 inbox 的所有主动生成。
+    // 手机端走线上下时心跳式 pause（带 durationMs 自动过期，防没发 resume 永久哑火），退出时 resume。
     app.post('/proactive/pause', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
