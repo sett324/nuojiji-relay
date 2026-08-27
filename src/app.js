@@ -211,9 +211,9 @@ export function createApp() {
             }
         })();
         try {
-            if (typeof c.executionCtx?.waitUntil === 'function') c.executionCtx.waitUntil(pushWork);
-            else pushWork.catch(() => {});
-        } catch { pushWork.catch(() => {}); }
+            // ⚠️ 修复：不要用 waitUntil，直接 await pushWork，确保 fetch 能执行完
+            await pushWork;
+        } catch { }
 
         // outbox 已写入，返回（手机轮询会拉到）。202 语义保留。
         return c.json({ accepted: true, requestId, generated: !item.error }, 202);
