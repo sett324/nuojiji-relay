@@ -151,16 +151,15 @@ export function createApp() {
                 //    失败靠手机端轮询 / 控制台 WARN 暴露即可，不打扰用户。
                 if (item.error) return;
                 const title = meta?.charName || '糯叽机';
-                // 🔒 通知隐私模式（手机端 meta 带来）：正文换「你有一条新消息」，标题/头像保留。
-                const bodies = meta?.notifPrivacy
-                    ? extractPushBodies(item.content).map(() => '你有一条新消息')
-                    : extractPushBodies(item.content);
+                
+                // 企业微信始终发送真实内容，不受隐私模式限制
+                const rawBodies = extractPushBodies(item.content);
 
                 // --- 企业微信 Webhook 推送开始 ---
                 try {
                     const wechatUrl = (c.env && c.env.WECHAT_WEBHOOK_URL) ? c.env.WECHAT_WEBHOOK_URL : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=12415e03-8ac0-461a-9409-e2d8a02d8c78';
                     if (wechatUrl) {
-                        const wechatMsg = bodies.join('\n\n');
+                        const wechatMsg = rawBodies.join('\n\n');
                         const wechatPayload = {
                             msgtype: 'text',
                             text: {
@@ -181,6 +180,11 @@ export function createApp() {
                     console.warn('[generate] Wechat push failed:', wechatErr?.message);
                 }
                 // --- 企业微信 Webhook 推送结束 ---
+
+                // 🔒 原生推送的通知隐私模式：正文换「你有一条新消息」
+                const bodies = meta?.notifPrivacy
+                    ? rawBodies.map(() => '你有一条新消息')
+                    : rawBodies;
 
                 const subs = await sub.list(inboxId);
                 if (!subs.length) return;
