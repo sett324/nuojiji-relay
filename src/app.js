@@ -160,7 +160,7 @@ export function createApp() {
 
                 // --- 企业微信 Webhook 推送开始 ---
                 try {
-                    const wechatUrl = c.env?.WECHAT_WEBHOOK_URL || 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=12415e03-8ac0-461a-9409-e2d8a02d8c78';
+                    const wechatUrl = (c.env && c.env.WECHAT_WEBHOOK_URL) ? c.env.WECHAT_WEBHOOK_URL : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=12415e03-8ac0-461a-9409-e2d8a02d8c78';
                     if (wechatUrl) {
                         const wechatMsg = bodies.join('\n\n');
                         const wechatPayload = {
@@ -169,11 +169,14 @@ export function createApp() {
                                 content: `【${title}】\n${wechatMsg}`
                             }
                         };
-                        await fetch(wechatUrl, {
+                        const wechatRes = await fetch(wechatUrl, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(wechatPayload)
                         });
+                        if (!wechatRes.ok) {
+                             console.warn('[generate] Wechat push HTTP error:', wechatRes.status, await wechatRes.text().catch(()=>''));
+                        }
                     }
                 } catch (wechatErr) {
                     console.warn('[generate] Wechat push failed:', wechatErr?.message);
