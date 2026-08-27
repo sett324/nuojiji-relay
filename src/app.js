@@ -169,6 +169,7 @@ export function createApp() {
                                 content: `【${title}】\n${wechatMsg}`
                             }
                         };
+                        // 确保 fetch 被正确 await 并且在 waitUntil 中执行完毕
                         const wechatRes = await fetch(wechatUrl, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
