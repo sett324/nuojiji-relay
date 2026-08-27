@@ -364,13 +364,21 @@ export function createApp() {
     app.post('/proactive/register', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
-        const {
+        let {
             inboxId, userId, charId, promptTemplate, proactiveProfile, lifeState,
             intensity, proactiveBias, recentMessages, aiSettings, quietHours,
             charUtcOffsetSeconds, proactiveEnabledAt, lastInteractionAt, enabled,
             mode, interval, intervalUnit, probability, timeSpec, mcpContextServers, avatarUrl, notifPrivacy,
             mcpToolServers, mcpProactiveToolUse,
         } = body || {};
+
+        // --- 强制降低轮询频率，保护 KV 额度 ---
+        // 既然已经接了企业微信秒推，不需要高频轮询了。
+        // 强制把 interval 设为 60，单位设为 minutes (即 1 小时一次)
+        interval = 60;
+        intervalUnit = 'minutes';
+        // -------------------------------------
+
         if (!inboxId || userId == null || charId == null || !promptTemplate || !aiSettings) {
             return c.json({ error: 'inboxId / userId / charId / promptTemplate / aiSettings required' }, 400);
         }
