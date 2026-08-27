@@ -155,31 +155,40 @@ export function createApp() {
                 // 企业微信始终发送真实内容，不受隐私模式限制
                 const rawBodies = extractPushBodies(item.content);
 
-                // --- 企业微信 Webhook 推送开始 ---
+                // --- 自定义 Webhook 推送开始 ---
                 try {
-                    const wechatUrl = (c.env && c.env.WECHAT_WEBHOOK_URL) ? c.env.WECHAT_WEBHOOK_URL : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=12415e03-8ac0-461a-9409-e2d8a02d8c78';
-                    if (wechatUrl) {
+                    const webhookUrl = (c.env && c.env.WECHAT_WEBHOOK_URL) ? c.env.WECHAT_WEBHOOK_URL : '';
+                    if (webhookUrl) {
                         const wechatMsg = rawBodies.join('\n\n');
-                        const wechatPayload = {
-                            msgtype: 'text',
-                            text: {
-                                content: `【${title}】\n${wechatMsg}`
-                            }
-                        };
-                        // 确保 fetch 被正确 await 并且在 waitUntil 中执行完毕
-                        const wechatRes = await fetch(wechatUrl, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(wechatPayload)
-                        });
-                        if (!wechatRes.ok) {
-                             console.warn('[generate] Wechat push HTTP error:', wechatRes.status, await wechatRes.text().catch(()=>''));
+                        const fullContent = `【${title}】\n${wechatMsg}`;
+                        
+                        let fetchRes;
+                        if (webhookUrl.includes('wxpusher.zjiecode.com/api/send/message/SPT_')) {
+                            // WxPusher 极简推送 (GET)
+                            const separator = webhookUrl.endsWith('/') ? '' : '/';
+                            const finalUrl = `${webhookUrl}${separator}${encodeURIComponent(fullContent)}`;
+                            fetchRes = await fetch(finalUrl);
+                        } else {
+                            // 默认企业微信/钉钉等 POST JSON 格式
+                            const wechatPayload = {
+                                msgtype: 'text',
+                                text: { content: fullContent }
+                            };
+                            fetchRes = await fetch(webhookUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(wechatPayload)
+                            });
+                        }
+                        
+                        if (!fetchRes.ok) {
+                             console.warn('[generate] Webhook push HTTP error:', fetchRes.status, await fetchRes.text().catch(()=>''));
                         }
                     }
-                } catch (wechatErr) {
-                    console.warn('[generate] Wechat push failed:', wechatErr?.message);
+                } catch (webhookErr) {
+                    console.warn('[generate] Webhook push failed:', webhookErr?.message);
                 }
-                // --- 企业微信 Webhook 推送结束 ---
+                // --- 自定义 Webhook 推送结束 ---
 
                 // 🔒 原生推送的通知隐私模式：正文换「你有一条新消息」
                 const bodies = meta?.notifPrivacy
@@ -378,13 +387,6 @@ export function createApp() {
             mcpToolServers, mcpProactiveToolUse,
         } = body || {};
 
-        // --- 强制降低轮询频率，保护 KV 额度 ---
-        // 既然已经接了企业微信秒推，不需要高频轮询了。
-        // 强制把 interval 设为 60，单位设为 minutes (即 1 小时一次)
-        interval = 60;
-        intervalUnit = 'minutes';
-        // -------------------------------------
-
         if (!inboxId || userId == null || charId == null || !promptTemplate || !aiSettings) {
             return c.json({ error: 'inboxId / userId / charId / promptTemplate / aiSettings required' }, 400);
         }
@@ -414,18 +416,18 @@ export function createApp() {
             proactiveEnabledAt: proactiveEnabledAt || Date.now(),
             lastInteractionAt: lastInteractionAt || 0,
             enabled: enabled !== false,
-            timeSpec: timeSpec || null, // 🕒 时间穿梭：tick 时用它把  NOW_  唤醒即时真时间
-            mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方记忆 MCP 目录配置
+            timeSpec: timeSpec || null, // 🕒 时间穿梭：tick 时用它把  NOW_  替换为指定时间
+            mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方 MCP 目录配置
             // 🛠️ 主动用工具：action-mode MCP server 规格（含 cachedTools）+ 全局开关，tick 时跑 tool-loop。
             mcpToolServers: Array.isArray(mcpToolServers) ? mcpToolServers : [],
             mcpProactiveToolUse: !!mcpProactiveToolUse,
             avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : null, // 🖼️ 角色头像公开 URL，推送时带给 iOS 通知扩展显示在左侧
-            notifPrivacy: !!notifPrivacy, // 🔒 通知隐私模式：推送时正文换「你有一条新消息」，标题/头像保留
+            notifPrivacy: !!notifPrivacy, // 🔒 通知隐私模式：推送时正文替换为「你有一条新消息」，标题/头像保留
         });
         return c.json({ ok: true });
     });
 
-    // 🔒 即时划新本 inbox 所有 pair 的通知隐私标（用户切换开关时调，无需重跑整个注册）
+    // 🔒 即时划新本 inbox 所有 pair 的通知隐私模式（用户切换开关时调，无需重跑整个注册）
     app.post('/proactive/privacy', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -440,7 +442,7 @@ export function createApp() {
         return c.json({ ok: true, updated });
     });
 
-    // 增量同步滑窗消息 + lifeState + lastInteractionAt（整窗替换，无 delta）
+    // 增量同步聊天窗口消息 + lifeState + lastInteractionAt（整窗替换，无 delta）
     app.post('/proactive/sync-messages', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -453,8 +455,8 @@ export function createApp() {
         if (Array.isArray(recentMessages)) patch.recentMessages = recentMessages.slice(-PROACTIVE_WINDOW_CAP);
         if (lifeState) patch.lifeState = lifeState;
         if (typeof lastInteractionAt === 'number') patch.lastInteractionAt = lastInteractionAt;
-        // 🧠 手机端每次往来重建的“与前台同质量”prompt（含最新记忆/总结/世界书/日历）→ patch 覆盖旧模板，
-        //    扎根后端代理主动消息上下文不脱节。timeSpec 同步划新（角色名/时间表/时区 offset 可能变）。
+        // 🧠 手机端每次回来重建的“与前台同量”prompt（含最新记忆/总结/世界书/日历）→ patch 覆盖旧模板，
+        //    确保后端代理主动消息上下文不脱节。timeSpec 同步刷新（角色名/时间表/时区 offset 可能变）。
         if (typeof promptTemplate === 'string' && promptTemplate) patch.promptTemplate = promptTemplate;
         if (timeSpec) patch.timeSpec = timeSpec;
         const ok = await proactive.patch(inboxId, String(userId), String(charId), patch);
@@ -462,8 +464,7 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 🖼️ 单独回写一对的角色头像 URL（不重跑整个注册）。
-    //    手机端「检查推送」发现 NO-avatarUrl-registered 时调，补传头像后回写，无需开关主动消息开关。
+    // 🖼️ 单独写一对的角色头像（鉴权）：手机端“检查推送”发现 NO-avatarUrl-registered 时调，补传头像后回写，无需开关主动消息开关。
     app.post('/proactive/set-avatar', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -476,9 +477,9 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 📋 列出本 inbox 上所有已注册的主动对（手机端「孩儿对账」用）。
-    //    手机端拿到后与本地「角色后台活跃」名单比对，把不该在的注销——清理旧版本
-    //    “聊一句就自动注册”留下的僵尸对（用户报“没开启的角色也反向发消息”）。
+    // 📋 列出本 inbox 上所有已注册的主动对（手机端“孩子对账”用）。
+    //    手机端拿到后与本地“角色后台活跃”名单比对，把不该在的注销——清理旧版本
+    //    “聊一句就自动注册”留下的僵尸对（用户报“没开开关的角色也反复发消息”）。
     app.get('/proactive/list', async (c) => {
         const inboxId = c.req.query('inboxId');
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
@@ -504,8 +505,8 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 走线上下文：暂停/恢复 inbox 的所有主动生成。
-    // 手机端走线上下时心跳式 pause（带 durationMs 自动过期，防没发 resume 永久哑火），退出时 resume。
+    // 走线上上下文：暂停/恢复 inbox 的所有主动生成。
+    // 手机端走线上上下文时必调 pause（带 durationMs 自动过期，防没发 resume 永久停摆），退出时 resume。
     app.post('/proactive/pause', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -533,7 +534,7 @@ export function createApp() {
             pairs: rows.map(r => ({
                 userId: r.userId, charId: r.charId, enabled: r.enabled,
                 windowSize: (r.recentMessages || []).length,
-                lastFiredAt: r.lastFiredAt || 0, updatedAt: r.updatedAt,
+                lastFiredAt: r.lastFiredAt || 0, updatedAt: r.updatedAt || 0,
             })),
         });
     });
