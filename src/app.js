@@ -150,8 +150,6 @@ export function createApp() {
                 //    若这里仍弹「你有一条新消息」→ 用户点进去聊天里却什么都没有 = 假通知。
                 //    失败靠手机端轮询 / 控制台 WARN 暴露即可，不打扰用户。
                 if (item.error) return;
-                const subs = await sub.list(inboxId);
-                if (!subs.length) return;
                 const title = meta?.charName || '糯叽机';
                 // 🔒 通知隐私模式（手机端 meta 带来）：正文换「你有一条新消息」，标题/头像保留。
                 const bodies = meta?.notifPrivacy
@@ -183,6 +181,9 @@ export function createApp() {
                     console.warn('[generate] Wechat push failed:', wechatErr?.message);
                 }
                 // --- 企业微信 Webhook 推送结束 ---
+
+                const subs = await sub.list(inboxId);
+                if (!subs.length) return;
 
                 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                 let i = 0;
@@ -409,8 +410,8 @@ export function createApp() {
             proactiveEnabledAt: proactiveEnabledAt || Date.now(),
             lastInteractionAt: lastInteractionAt || 0,
             enabled: enabled !== false,
-            timeSpec: timeSpec || null, // 🕒 时间穿透：tick 时用它把 §NOW_*§ 哨兵填成即时真时间
-            mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方记忆 MCP 直连配置
+            timeSpec: timeSpec || null, // 🕒 时间穿梭：tick 时用它把  NOW_  唤醒即时真时间
+            mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方记忆 MCP 目录配置
             // 🛠️ 主动用工具：action-mode MCP server 规格（含 cachedTools）+ 全局开关，tick 时跑 tool-loop。
             mcpToolServers: Array.isArray(mcpToolServers) ? mcpToolServers : [],
             mcpProactiveToolUse: !!mcpProactiveToolUse,
@@ -420,7 +421,7 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 🔒 即时刷新本 inbox 所有 pair 的通知隐私标志（用户切开关时调，无需重跑整个注册）。
+    // 🔒 即时划新本 inbox 所有 pair 的通知隐私标（用户切换开关时调，无需重跑整个注册）
     app.post('/proactive/privacy', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -448,8 +449,8 @@ export function createApp() {
         if (Array.isArray(recentMessages)) patch.recentMessages = recentMessages.slice(-PROACTIVE_WINDOW_CAP);
         if (lifeState) patch.lifeState = lifeState;
         if (typeof lastInteractionAt === 'number') patch.lastInteractionAt = lastInteractionAt;
-        // 🧠 手机端每次往来重建的「与前台同质量」prompt（含最新记忆/总结/世界书/日历）→ patch 覆盖旧模板，
-        //    根治后端代理主动消息上下文不即时。timeSpec 同步刷新（角色名/时段表/异地 offset 可能变）。
+        // 🧠 手机端每次往来重建的“与前台同质量”prompt（含最新记忆/总结/世界书/日历）→ patch 覆盖旧模板，
+        //    扎根后端代理主动消息上下文不脱节。timeSpec 同步划新（角色名/时间表/时区 offset 可能变）。
         if (typeof promptTemplate === 'string' && promptTemplate) patch.promptTemplate = promptTemplate;
         if (timeSpec) patch.timeSpec = timeSpec;
         const ok = await proactive.patch(inboxId, String(userId), String(charId), patch);
@@ -458,7 +459,7 @@ export function createApp() {
     });
 
     // 🖼️ 单独回写一对的角色头像 URL（不重跑整个注册）。
-    //   手机端「检查推送」发现 NO-avatarUrl-registered 时调，补传头像后回写，无需关开主动消息开关。
+    //    手机端「检查推送」发现 NO-avatarUrl-registered 时调，补传头像后回写，无需开关主动消息开关。
     app.post('/proactive/set-avatar', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -471,9 +472,9 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 📋 列出本 inbox 上所有已注册的主动对（手机端「孤儿对账」用）。
-    //   手机端拿到后与本地「角色后台活动」名单求差集，把不该在的注销掉——清理旧版本
-    //   「聊一句就自动注册」留下的僵尸对（用户报「没开开关的角色也反复发消息」）。
+    // 📋 列出本 inbox 上所有已注册的主动对（手机端「孩儿对账」用）。
+    //    手机端拿到后与本地「角色后台活跃」名单比对，把不该在的注销——清理旧版本
+    //    “聊一句就自动注册”留下的僵尸对（用户报“没开启的角色也反向发消息”）。
     app.get('/proactive/list', async (c) => {
         const inboxId = c.req.query('inboxId');
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
