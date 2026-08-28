@@ -10,7 +10,7 @@ import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 
-const VERSION = '1.0.2-path-fix';
+const VERSION = '1.0.3-auth-stable';
 
 export function createApp() {
     const app = new Hono();
@@ -38,34 +38,30 @@ export function createApp() {
         return stores;
     }
 
+    // 公开接口
     app.get('/health', async (c) => {
         const { outbox } = await getStores(c.env);
         return c.json({ ok: true, store: outbox.kind || 'unknown', version: VERSION });
     });
 
-    // 权限校验中间件
-    app.use('/generate', requireSecret);
-    app.use('/outbox', requireSecret);
-    app.use('/ack', requireSecret);
-    app.use('/api/*', requireSecret);
-
-    // 诊断接口：同时支持 /api/push/diag 和 /push/diag (兼容 App 不同版本的路径策略)
+    // 需要鉴权的接口统一处理
     const diagHandler = async (c) => {
         return c.json({
             ok: true,
             env: {
                 has_wxpusher_token: !!c.env.WXPUSHER_APP_TOKEN,
                 has_wxpusher_uid: !!c.env.WXPUSHER_UID,
-                has_secret: !!c.env.SECRET,
+                has_relay_secret: !!c.env.RELAY_SECRET,
                 has_kv: !!c.env.OUTBOX
             },
             version: VERSION
         });
     };
-    app.get('/api/push/diag', diagHandler);
-    app.get('/push/diag', diagHandler);
 
-    app.post('/generate', async (c) => {
+    // 显式绑定路径，确保鉴权中间件能正确拦截
+    app.get('/api/push/diag', requireSecret, diagHandler);
+    app.get('/push/diag', requireSecret, diagHandler);
+    app.post('/generate', requireSecret, async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
         const { requestId, inboxId, messages, settings, maxTokens, meta } = body || {};
@@ -107,11 +103,7 @@ export function createApp() {
                     const payload = {
                         title, body, charId: item.charId, userId: item.userId, kind: 'relay-outbox',
                     };
-                    
-                    // 1. 强制触发 WxPusher
                     await dispatchPush(c.env, null, payload);
-
-                    // 2. 原有订阅分发
                     for (const s of subs) {
                         await dispatchPush(c.env, s, payload);
                     }
@@ -125,7 +117,7 @@ export function createApp() {
         return c.json({ accepted: true, requestId, generated: !item.error }, 202);
     });
 
-    app.get('/outbox', async (c) => {
+    app.get('/outbox', requireSecret, async (c) => {
         const inboxId = c.req.query('inboxId');
         const since = Number(c.req.query('since') || 0);
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
@@ -134,7 +126,7 @@ export function createApp() {
         return c.json({ items, now: nowMs() });
     });
 
-    app.post('/ack', async (c) => {
+    app.post('/ack', requireSecret, async (c) => {
         const { inboxId, ids } = await c.req.json();
         const { outbox } = await getStores(c.env);
         const acked = await outbox.ack(inboxId, ids);
