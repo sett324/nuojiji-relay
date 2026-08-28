@@ -35,6 +35,9 @@ export function createApp() {
         allowHeaders: ['Authorization', 'Content-Type'],
     }));
 
+    // 企微校验文件路由
+    app.get('/WW_verify_OsAExzVsZdi27EXs.txt', (c) => c.text('OsAExzVsZdi27EXs'));
+
     // 每个请求懒初始化 store（Workers 每次 fetch 都新 env；Node 进程级缓存见下）
     const stores = { outbox: null, sub: null, proactive: null, kv: null };
     async function getStores(env) {
