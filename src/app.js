@@ -1,15 +1,27 @@
+// Hono app —— 一份代码，Workers 和 Node 共用。
+//
+// 路由：
+//   GET  /health                 健康检查（设置页测连接用）
+//   POST /generate               提交生成（fire-and-forget，202）
+//   GET  /outbox?inboxId=&since=  拉取已生成结果
+//   POST /ack                    确认并删除
+//   GET  /api/push/vapid-key     取 VAPID 公钥（复用 APP 现有订阅流程）
+//   POST /api/push/subscribe     注册推送订阅
+//   DELETE /api/push/unsubscribe 退订
+
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { requireSecret } from './util/auth.js';
 import { createOutboxStore } from './store/outboxStore.js';
 import { createSubStore } from './store/subStore.js';
+import { createProactiveStore } from './store/proactiveStore.js';
 import { createKvStore } from './store/kvStore.js';
 import { runGeneration } from './ai/aiCaller.js';
 import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
-import { makeMessageId, nowMs } from './util/ids.js';
+import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 
-const VERSION = '1.0.0-clean';
+const VERSION = '1.0.0-origin-match';
 
 export function createApp() {
     const app = new Hono();
@@ -20,17 +32,19 @@ export function createApp() {
         allowHeaders: ['Authorization', 'Content-Type'],
     }));
 
-    const stores = { outbox: null, sub: null, kv: null };
+    const stores = { outbox: null, sub: null, proactive: null, kv: null };
     async function getStores(env) {
         if (env && env.OUTBOX) {
             return {
                 outbox: await createOutboxStore(env),
                 sub: await createSubStore(env),
+                proactive: await createProactiveStore(env),
                 kv: await createKvStore(env),
             };
         }
         if (!stores.outbox) stores.outbox = await createOutboxStore(env);
         if (!stores.sub) stores.sub = await createSubStore(env);
+        if (!stores.proactive) stores.proactive = await createProactiveStore(env);
         if (!stores.kv) stores.kv = await createKvStore(env);
         return stores;
     }
@@ -44,64 +58,78 @@ export function createApp() {
     app.use('/outbox', requireSecret);
     app.use('/ack', requireSecret);
     app.use('/api/push/subscribe', requireSecret);
+    app.use('/api/push/unsubscribe', requireSecret);
+    app.use('/api/push/diag', requireSecret);
 
     app.post('/generate', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
         const { requestId, inboxId, messages, settings, maxTokens, meta } = body || {};
         if (!requestId || !inboxId || !Array.isArray(messages) || !settings) {
-            return c.json({ error: 'bad request' }, 400);
+            return c.json({ error: 'requestId / inboxId / messages / settings required' }, 400);
         }
 
         const { outbox, sub } = await getStores(c.env);
         if (await outbox.seenRequest(requestId)) {
-            return c.json({ duplicate: true }, 409);
+            return c.json({ duplicate: true, requestId }, 409);
         }
         await outbox.markRequest(requestId);
 
         const id = makeMessageId(requestId);
-        let content;
+        let item;
         try {
-            content = await runGeneration(settings, messages, maxTokens);
-            const item = { id, requestId, content, error: null, createdAt: nowMs() };
-            await outbox.put(inboxId, item);
+            const content = await runGeneration(settings, messages, maxTokens);
+            item = {
+                id, requestId,
+                charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
+                content, error: null, createdAt: nowMs(),
+            };
+        } catch (e) {
+            item = {
+                id, requestId,
+                charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
+                content: null, error: String(e?.message || e), createdAt: nowMs(),
+            };
+        }
+        await outbox.put(inboxId, item);
 
-            // 推送逻辑
-            const pushWork = (async () => {
-                try {
-                    const subs = await sub.list(inboxId);
+        const pushWork = (async () => {
+            try {
+                if (item.error) return;
+                const subs = await sub.list(inboxId);
+                const title = meta?.charName || '糯叽机';
+                const bodies = extractPushBodies(item.content);
+                for (const body of bodies) {
                     const payload = {
-                        title: meta?.charName || '糯叽机',
-                        body: content.slice(0, 100),
-                        kind: 'relay-outbox'
+                        title, body, charId: item.charId, userId: item.userId, kind: 'relay-outbox',
                     };
                     for (const s of subs) {
                         await dispatchPush(c.env, s, payload);
                     }
-                } catch (e) { console.warn('Push failed', e); }
-            })();
-            if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(pushWork);
+                }
+            } catch (e) {
+                console.warn('[generate] push failed:', e?.message);
+            }
+        })();
+        if (typeof c.executionCtx?.waitUntil === 'function') c.executionCtx.waitUntil(pushWork);
 
-            return c.json({ accepted: true, requestId, generated: true }, 202);
-        } catch (e) {
-            await outbox.put(inboxId, { id, requestId, content: null, error: String(e), createdAt: nowMs() });
-            return c.json({ error: String(e) }, 500);
-        }
+        return c.json({ accepted: true, requestId, generated: !item.error }, 202);
     });
 
     app.get('/outbox', async (c) => {
         const inboxId = c.req.query('inboxId');
+        const since = Number(c.req.query('since') || 0);
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
         const { outbox } = await getStores(c.env);
-        const items = await outbox.list(inboxId, 0);
+        const items = await outbox.list(inboxId, since);
         return c.json({ items, now: nowMs() });
     });
 
     app.post('/ack', async (c) => {
         const { inboxId, ids } = await c.req.json();
         const { outbox } = await getStores(c.env);
-        await outbox.ack(inboxId, ids);
-        return c.json({ ok: true });
+        const acked = await outbox.ack(inboxId, ids);
+        return c.json({ acked });
     });
 
     return app;
