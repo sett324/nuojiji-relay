@@ -10,7 +10,7 @@ import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 
-const VERSION = '1.0.3-auth-stable';
+const VERSION = '1.0.4-path-wildcard';
 
 export function createApp() {
     const app = new Hono();
@@ -38,13 +38,13 @@ export function createApp() {
         return stores;
     }
 
-    // 公开接口
+    // 公开健康检查
     app.get('/health', async (c) => {
         const { outbox } = await getStores(c.env);
         return c.json({ ok: true, store: outbox.kind || 'unknown', version: VERSION });
     });
 
-    // 需要鉴权的接口统一处理
+    // 诊断处理器
     const diagHandler = async (c) => {
         return c.json({
             ok: true,
@@ -58,9 +58,12 @@ export function createApp() {
         });
     };
 
-    // 显式绑定路径，确保鉴权中间件能正确拦截
+    // 🛡️ 暴力路径匹配：无论路径里有没有 api，只要是 push/diag 结尾就接住
     app.get('/api/push/diag', requireSecret, diagHandler);
     app.get('/push/diag', requireSecret, diagHandler);
+    // 针对某些 App 可能出现的奇怪补全路径进行兜底
+    app.get('/*/push/diag', requireSecret, diagHandler);
+
     app.post('/generate', requireSecret, async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -117,7 +120,16 @@ export function createApp() {
         return c.json({ accepted: true, requestId, generated: !item.error }, 202);
     });
 
+    // 同样为其他接口增加兜底路径
     app.get('/outbox', requireSecret, async (c) => {
+        const inboxId = c.req.query('inboxId');
+        const since = Number(c.req.query('since') || 0);
+        if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
+        const { outbox } = await getStores(c.env);
+        const items = await outbox.list(inboxId, since);
+        return c.json({ items, now: nowMs() });
+    });
+    app.get('/api/outbox', requireSecret, async (c) => {
         const inboxId = c.req.query('inboxId');
         const since = Number(c.req.query('since') || 0);
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
