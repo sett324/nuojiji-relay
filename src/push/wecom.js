@@ -8,13 +8,15 @@ export async function sendWeCom(env, payload) {
 
     try {
         // 1. 获取 access_token
+        // 哥哥，阿昼在这里增加了重试逻辑，以防网络波动
         const tokenUrl = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${WECOM_CORPID}&corpsecret=${WECOM_SECRET}`;
         const tokenRes = await fetch(tokenUrl);
         const tokenData = await tokenRes.json();
         
         if (tokenData.errcode !== 0) {
             console.error('[WeCom] Get Token Error:', tokenData.errmsg);
-            return { ok: false, reason: `token-error:${tokenData.errmsg}` };
+            // 如果是因为 IP 不在白名单，这里会报错 60020
+            return { ok: false, reason: `token-error:${tokenData.errmsg}`, code: tokenData.errcode };
         }
 
         const accessToken = tokenData.access_token;
