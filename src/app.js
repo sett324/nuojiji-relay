@@ -20,6 +20,7 @@ import { runGeneration } from './ai/aiCaller.js';
 import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
+import { sendWeCom } from './push/wecom.js';
 
 const VERSION = '1.0.0';
 
@@ -152,8 +153,14 @@ export function createApp() {
                 if (item.error) return;
                 const title = meta?.charName || '糯叽机';
                 
-                // 企业微信始终发送真实内容，不受隐私模式限制
+                // 提取真实内容
                 const rawBodies = extractPushBodies(item.content);
+
+                // --- 企业微信自建应用推送 ---
+                if (c.env.WECOM_SECRET) {
+                    const wecomMsg = rawBodies.join('\n\n');
+                    await sendWeCom(c.env, { title, body: wecomMsg }).catch(e => console.error('[WeCom] push failed:', e.message));
+                }
 
                 // --- 自定义 Webhook 推送开始 ---
                 try {
