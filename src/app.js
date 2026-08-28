@@ -226,8 +226,9 @@ export function createApp() {
             }
         })();
         try {
-            // ⚠️ 修复：不要用 waitUntil，直接 await pushWork，确保 fetch 能执行完
-            await pushWork;
+            // 🛡️ 修复 524 超时：不要 await pushWork，防止推送延迟导致 Cloudflare 响应超时
+            // 直接交给 executionCtx.waitUntil 在后台处理推送任务
+            c.executionCtx.waitUntil(pushWork);
         } catch { }
 
         // outbox 已写入，返回（手机轮询会拉到）。202 语义保留。
@@ -416,18 +417,16 @@ export function createApp() {
             proactiveEnabledAt: proactiveEnabledAt || Date.now(),
             lastInteractionAt: lastInteractionAt || 0,
             enabled: enabled !== false,
-            timeSpec: timeSpec || null, // 🕒 时间穿梭：tick 时用它把  NOW_  替换为指定时间
-            mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方 MCP 目录配置
-            // 🛠️ 主动用工具：action-mode MCP server 规格（含 cachedTools）+ 全局开关，tick 时跑 tool-loop。
+            timeSpec: timeSpec || null,
+            mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [],
             mcpToolServers: Array.isArray(mcpToolServers) ? mcpToolServers : [],
             mcpProactiveToolUse: !!mcpProactiveToolUse,
-            avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : null, // 🖼️ 角色头像公开 URL，推送时带给 iOS 通知扩展显示在左侧
-            notifPrivacy: !!notifPrivacy, // 🔒 通知隐私模式：推送时正文替换为「你有一条新消息」，标题/头像保留
+            avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : null,
+            notifPrivacy: !!notifPrivacy,
         });
         return c.json({ ok: true });
     });
 
-    // 🔒 即时划新本 inbox 所有 pair 的通知隐私模式（用户切换开关时调，无需重跑整个注册）
     app.post('/proactive/privacy', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -442,7 +441,6 @@ export function createApp() {
         return c.json({ ok: true, updated });
     });
 
-    // 增量同步聊天窗口消息 + lifeState + lastInteractionAt（整窗替换，无 delta）
     app.post('/proactive/sync-messages', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -455,8 +453,6 @@ export function createApp() {
         if (Array.isArray(recentMessages)) patch.recentMessages = recentMessages.slice(-PROACTIVE_WINDOW_CAP);
         if (lifeState) patch.lifeState = lifeState;
         if (typeof lastInteractionAt === 'number') patch.lastInteractionAt = lastInteractionAt;
-        // 🧠 手机端每次回来重建的“与前台同量”prompt（含最新记忆/总结/世界书/日历）→ patch 覆盖旧模板，
-        //    确保后端代理主动消息上下文不脱节。timeSpec 同步刷新（角色名/时间表/时区 offset 可能变）。
         if (typeof promptTemplate === 'string' && promptTemplate) patch.promptTemplate = promptTemplate;
         if (timeSpec) patch.timeSpec = timeSpec;
         const ok = await proactive.patch(inboxId, String(userId), String(charId), patch);
@@ -464,7 +460,6 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 🖼️ 单独写一对的角色头像（鉴权）：手机端“检查推送”发现 NO-avatarUrl-registered 时调，补传头像后回写，无需开关主动消息开关。
     app.post('/proactive/set-avatar', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -477,9 +472,6 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 📋 列出本 inbox 上所有已注册的主动对（手机端“孩子对账”用）。
-    //    手机端拿到后与本地“角色后台活跃”名单比对，把不该在的注销——清理旧版本
-    //    “聊一句就自动注册”留下的僵尸对（用户报“没开开关的角色也反复发消息”）。
     app.get('/proactive/list', async (c) => {
         const inboxId = c.req.query('inboxId');
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
@@ -505,8 +497,6 @@ export function createApp() {
         return c.json({ ok: true });
     });
 
-    // 走线上上下文：暂停/恢复 inbox 的所有主动生成。
-    // 手机端走线上上下文时必调 pause（带 durationMs 自动过期，防没发 resume 永久停摆），退出时 resume。
     app.post('/proactive/pause', async (c) => {
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
@@ -517,7 +507,6 @@ export function createApp() {
             await proactive.setPause(inboxId, 0);
             return c.json({ ok: true, paused: false });
         }
-        // 默认 10 分钟，手机端每隔几分钟续期；上限 1 小时防异常长暂停。
         const dur = Math.min(60 * 60 * 1000, Math.max(60 * 1000, Number(durationMs) || 10 * 60 * 1000));
         const until = nowMs() + dur;
         await proactive.setPause(inboxId, until);
@@ -529,7 +518,6 @@ export function createApp() {
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
         const { proactive } = await getStores(c.env);
         const rows = await proactive.listByInbox(inboxId);
-        // 不回 promptTemplate/key 等敏感内容，只回状态
         return c.json({
             pairs: rows.map(r => ({
                 userId: r.userId, charId: r.charId, enabled: r.enabled,
