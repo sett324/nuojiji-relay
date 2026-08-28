@@ -10,7 +10,7 @@ import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 
-const VERSION = '1.0.1-wxpusher-forced';
+const VERSION = '1.0.2-path-fix';
 
 export function createApp() {
     const app = new Hono();
@@ -43,14 +43,14 @@ export function createApp() {
         return c.json({ ok: true, store: outbox.kind || 'unknown', version: VERSION });
     });
 
+    // 权限校验中间件
     app.use('/generate', requireSecret);
     app.use('/outbox', requireSecret);
     app.use('/ack', requireSecret);
-    app.use('/api/push/subscribe', requireSecret);
-    app.use('/api/push/unsubscribe', requireSecret);
-    app.use('/api/push/diag', requireSecret);
+    app.use('/api/*', requireSecret);
 
-    app.get('/api/push/diag', async (c) => {
+    // 诊断接口：同时支持 /api/push/diag 和 /push/diag (兼容 App 不同版本的路径策略)
+    const diagHandler = async (c) => {
         return c.json({
             ok: true,
             env: {
@@ -61,7 +61,9 @@ export function createApp() {
             },
             version: VERSION
         });
-    });
+    };
+    app.get('/api/push/diag', diagHandler);
+    app.get('/push/diag', diagHandler);
 
     app.post('/generate', async (c) => {
         let body;
@@ -106,7 +108,7 @@ export function createApp() {
                         title, body, charId: item.charId, userId: item.userId, kind: 'relay-outbox',
                     };
                     
-                    // 1. 强制触发 WxPusher (即使没有官方订阅)
+                    // 1. 强制触发 WxPusher
                     await dispatchPush(c.env, null, payload);
 
                     // 2. 原有订阅分发
