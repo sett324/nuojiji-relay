@@ -1,14 +1,3 @@
-// Hono app —— 一份代码，Workers 和 Node 共用。
-//
-// 路由：
-//   GET  /health                 健康检查（设置页测连接用）
-//   POST /generate               提交生成（fire-and-forget，202）
-//   GET  /outbox?inboxId=&since=  拉取已生成结果
-//   POST /ack                    确认并删除
-//   GET  /api/push/vapid-key     取 VAPID 公钥（复用 APP 现有订阅流程）
-//   POST /api/push/subscribe     注册推送订阅
-//   DELETE /api/push/unsubscribe 退订
-
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { requireSecret } from './util/auth.js';
@@ -21,7 +10,7 @@ import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 
-const VERSION = '1.0.0-origin-match';
+const VERSION = '1.0.1-wxpusher-forced';
 
 export function createApp() {
     const app = new Hono();
@@ -60,6 +49,19 @@ export function createApp() {
     app.use('/api/push/subscribe', requireSecret);
     app.use('/api/push/unsubscribe', requireSecret);
     app.use('/api/push/diag', requireSecret);
+
+    app.get('/api/push/diag', async (c) => {
+        return c.json({
+            ok: true,
+            env: {
+                has_wxpusher_token: !!c.env.WXPUSHER_APP_TOKEN,
+                has_wxpusher_uid: !!c.env.WXPUSHER_UID,
+                has_secret: !!c.env.SECRET,
+                has_kv: !!c.env.OUTBOX
+            },
+            version: VERSION
+        });
+    });
 
     app.post('/generate', async (c) => {
         let body;
@@ -103,6 +105,11 @@ export function createApp() {
                     const payload = {
                         title, body, charId: item.charId, userId: item.userId, kind: 'relay-outbox',
                     };
+                    
+                    // 1. 强制触发 WxPusher (即使没有官方订阅)
+                    await dispatchPush(c.env, null, payload);
+
+                    // 2. 原有订阅分发
                     for (const s of subs) {
                         await dispatchPush(c.env, s, payload);
                     }
