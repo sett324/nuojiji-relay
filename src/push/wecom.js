@@ -2,13 +2,14 @@ export async function sendWeCom(env, payload) {
     const { WECOM_CORPID, WECOM_AGENTID, WECOM_SECRET, WECOM_TOUSER = '@all' } = env;
 
     if (!WECOM_CORPID || !WECOM_AGENTID || !WECOM_SECRET) {
+        console.error('[WeCom] Missing config in env');
         return { ok: false, reason: 'missing-wecom-config' };
     }
 
     try {
         // 1. 获取 access_token
-        // 注意：在 Cloudflare Workers 环境下，fetch 会自动处理 HTTPS 握手，无需担心长连接或证书问题
-        const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${WECOM_CORPID}&corpsecret=${WECOM_SECRET}`);
+        const tokenUrl = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${WECOM_CORPID}&corpsecret=${WECOM_SECRET}`;
+        const tokenRes = await fetch(tokenUrl);
         const tokenData = await tokenRes.json();
         
         if (tokenData.errcode !== 0) {
@@ -19,7 +20,10 @@ export async function sendWeCom(env, payload) {
         const accessToken = tokenData.access_token;
 
         // 2. 发送消息
-        const sendRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${accessToken}`, {
+        const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${accessToken}`;
+        const content = payload.title ? `${payload.title}\n${payload.body}` : payload.body;
+        
+        const sendRes = await fetch(sendUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -27,9 +31,9 @@ export async function sendWeCom(env, payload) {
             body: JSON.stringify({
                 touser: WECOM_TOUSER,
                 msgtype: 'text',
-                agentid: WECOM_AGENTID,
+                agentid: parseInt(WECOM_AGENTID, 10),
                 text: {
-                    content: payload.title ? `${payload.title}\n${payload.body}` : payload.body
+                    content: content
                 },
                 safe: 0
             })
@@ -38,6 +42,8 @@ export async function sendWeCom(env, payload) {
         const sendData = await sendRes.json();
         if (sendData.errcode !== 0) {
             console.error('[WeCom] Send Message Error:', sendData.errmsg);
+        } else {
+            console.log('[WeCom] Push success!');
         }
         return { ok: sendData.errcode === 0, data: sendData };
     } catch (e) {
